@@ -882,7 +882,7 @@ unpack_fields(const MYSQL *mysql,
     }
 
     field->extension= NULL;
-    if (ma_has_extended_type_info(mysql))
+    if (ma_has_extended_type_info(mysql) && row->data[8] != -1)
     {
       if (row->data[i+1] - row->data[i] > 1)
       {
@@ -979,30 +979,37 @@ MYSQL_DATA *mthd_my_read_rows(MYSQL *mysql,MYSQL_FIELD *mysql_fields,
     prev_ptr= &cur->next;
     to= (char*) (cur->data+fields+1);
     end_to=to+fields+pkt_len-1;
-    for (field=0 ; field < fields ; field++)
+    for (field = 0; field < fields; field++)
     {
-      if ((len=(ulong) net_field_length(&cp)) == NULL_LENGTH)
-      {						/* null field */
-        cur->data[field] = 0;
-      }
-      else
-      {
-        cur->data[field] = to;
-        if (len > (ulong)(end_to - to) || to > end_to)
+        if (cp - net->read_pos <= pkt_len)
         {
-          free_rows(result);
-          SET_CLIENT_ERROR(mysql, CR_UNKNOWN_ERROR, SQLSTATE_UNKNOWN, 0);
-          return(0);
+            if ((len = (ulong)net_field_length(&cp)) == NULL_LENGTH)
+            {						/* null field */
+                cur->data[field] = 0;
+            }
+            else
+            {
+                cur->data[field] = to;
+                if (len > (ulong)(end_to - to) || to > end_to)
+                {
+                    free_rows(result);
+                    SET_CLIENT_ERROR(mysql, CR_UNKNOWN_ERROR, SQLSTATE_UNKNOWN, 0);
+                    return(0);
+                }
+                memcpy(to, (char*)cp, len); to[len] = 0;
+                to += len + 1;
+                cp += len;
+                if (mysql_fields)
+                {
+                    if (mysql_fields[field].max_length < len)
+                        mysql_fields[field].max_length = len;
+                }
+            }
         }
-        memcpy(to,(char*) cp,len); to[len]=0;
-        to+=len+1;
-        cp+=len;
-        if (mysql_fields)
+        else
         {
-          if (mysql_fields[field].max_length < len)
-            mysql_fields[field].max_length=len;
-         }
-      }
+            cur->data[field] = -1;
+        }
     }
     cur->data[field]=to;			/* End of last field */
     if ((pkt_len=ma_net_safe_read(mysql)) == packet_error)
