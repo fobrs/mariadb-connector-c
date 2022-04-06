@@ -882,7 +882,7 @@ unpack_fields(const MYSQL *mysql,
     }
 
     field->extension= NULL;
-    if (ma_has_extended_type_info(mysql) && row->data[8] != -1)
+    if (ma_has_extended_type_info(mysql) && row->data[8] != (char*) -1)
     {
       if (row->data[i+1] - row->data[i] > 1)
       {
@@ -934,6 +934,8 @@ error:
   return(0);
 }
 
+
+int packet_overflow_counter = 0;
 
 /* Read all rows (fields or data) from server */
 
@@ -1008,7 +1010,8 @@ MYSQL_DATA *mthd_my_read_rows(MYSQL *mysql,MYSQL_FIELD *mysql_fields,
         }
         else
         {
-            cur->data[field] = -1;
+            cur->data[field] = (char*)-1;
+            packet_overflow_counter++;
         }
     }
     cur->data[field]=to;			/* End of last field */
