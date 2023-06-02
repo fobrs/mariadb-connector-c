@@ -202,10 +202,16 @@ restart:
   if (len == packet_error || len == 0)
   {
     end_server(mysql);
-    my_set_error(mysql, net->last_errno == ER_NET_PACKET_TOO_LARGE ?
-		     CR_NET_PACKET_TOO_LARGE:
-		     CR_SERVER_LOST,
-         SQLSTATE_UNKNOWN, 0, errno);
+#ifdef HAVE_TLS
+    /* don't overwrite possible tls protocol errors */
+    if (net->last_errno != CR_SSL_CONNECTION_ERROR)
+#endif
+    {
+      my_set_error(mysql, net->last_errno == ER_NET_PACKET_TOO_LARGE ?
+                   CR_NET_PACKET_TOO_LARGE:
+                   CR_SERVER_LOST,
+                   SQLSTATE_UNKNOWN, 0, errno);
+    }
     return(packet_error);
   }
   if (net->read_pos[0] == 255)
@@ -668,6 +674,18 @@ struct st_default_options mariadb_defaults[] =
       (OPTS)->extension= (struct st_mysql_options_extension *)  \
         calloc(1, sizeof(struct st_mysql_options_extension));
 
+#define OPT_SET_EXTENDED_VALUE_BIN(OPTS, KEY, KEY_LEN, VAL, LEN) \
+    CHECK_OPT_EXTENSION_SET(OPTS)                                \
+    free((gptr)(OPTS)->extension->KEY);                          \
+    if((VAL) && (LEN)) {                                         \
+      if (((OPTS)->extension->KEY= malloc((LEN)))) {             \
+        memcpy((OPTS)->extension->KEY, (VAL), (LEN));            \
+        (OPTS)->extension->KEY_LEN= (LEN);                       \
+      }                                                          \
+    }                                                            \
+    else                                                         \
+      (OPTS)->extension->KEY= NULL
+
 #define OPT_SET_EXTENDED_VALUE_STR(OPTS, KEY, VAL)               \
     CHECK_OPT_EXTENSION_SET(OPTS)                                \
     free((gptr)(OPTS)->extension->KEY);                          \
@@ -873,7 +891,7 @@ unpack_fields(const MYSQL *mysql,
     for (i=0; i < field_count; i++)
     {
       uint length= (uint)(row->data[i+1] - row->data[i] - 1);
-      if (!row->data[i] && row->data[i][length])
+      if (!row->data[i] || row->data[i][length])
         goto error;
 
       *(char **)(((char *)field) + rset_field_offsets[i*2])=
@@ -1348,7 +1366,6 @@ MYSQL *mthd_my_real_connect(MYSQL *mysql, const char *host, const char *user,
   MA_PVIO_CINFO  cinfo= {NULL, NULL, 0, -1, NULL};
   MARIADB_PVIO   *pvio= NULL;
   char    *scramble_data;
-  my_bool is_maria= 0;
   const char *scramble_plugin;
   uint pkt_length, scramble_len, pkt_scramble_len= 0;
   NET	*net= &mysql->net;
@@ -1558,7 +1575,6 @@ MYSQL *mthd_my_real_connect(MYSQL *mysql, const char *host, const char *user,
   if (strncmp(end, MA_RPL_VERSION_HACK, sizeof(MA_RPL_VERSION_HACK) - 1) == 0)
   {
     mysql->server_version= strdup(end + sizeof(MA_RPL_VERSION_HACK) - 1);
-    is_maria= 1;
   }
   else
   {
@@ -1567,7 +1583,6 @@ MYSQL *mthd_my_real_connect(MYSQL *mysql, const char *host, const char *user,
       SET_CLIENT_ERROR(mysql, CR_OUT_OF_MEMORY, SQLSTATE_UNKNOWN, 0);
       goto error;
     }
-    is_maria= mariadb_connection(mysql);
   }
   end+= strlen(end) + 1;
 
@@ -1598,7 +1613,7 @@ MYSQL *mthd_my_real_connect(MYSQL *mysql, const char *host, const char *user,
     pkt_scramble_len= uint1korr(end + 7);
 
     /* check if MariaD2B specific capabilities are available */
-    if (is_maria && !(mysql->server_capabilities & CLIENT_MYSQL))
+    if (mariadb_connection(mysql) && !(mysql->server_capabilities & CLIENT_MYSQL))
     {
       mysql->extension->mariadb_server_capabilities= (ulonglong) uint4korr(end + 14);
     }
@@ -1806,7 +1821,7 @@ my_bool STDCALL mariadb_reconnect(MYSQL *mysql)
     if (stmt->state != MYSQL_STMT_INITTED)
     {
       stmt->state= MYSQL_STMT_INITTED;
-      SET_CLIENT_STMT_ERROR(stmt, CR_SERVER_LOST, SQLSTATE_UNKNOWN, 0);
+      stmt_set_error(stmt, CR_SERVER_LOST, SQLSTATE_UNKNOWN, 0);
     }
   }
 
@@ -1822,6 +1837,11 @@ my_bool STDCALL mariadb_reconnect(MYSQL *mysql)
   mysql_close(mysql);
   *mysql=tmp_mysql;
   mysql->net.pvio->mysql= mysql;
+#ifdef HAVE_TLS
+  /* CONC-604: Set new connection handle */
+  if (mysql_get_ssl_cipher(mysql))
+    ma_pvio_tls_set_connection(mysql);
+#endif
   ma_net_clear(&mysql->net);
   mysql->affected_rows= ~(unsigned long long) 0;
   mysql->info= 0;
@@ -1838,7 +1858,7 @@ void ma_invalidate_stmts(MYSQL *mysql, const char *function_name)
     {
       MYSQL_STMT *stmt= (MYSQL_STMT *)li_stmt->data;
       stmt->mysql= NULL;
-      SET_CLIENT_STMT_ERROR(stmt, CR_STMT_CLOSED, SQLSTATE_UNKNOWN, function_name);
+      stmt_set_error(stmt, CR_STMT_CLOSED, SQLSTATE_UNKNOWN, 0, function_name);
     }
     mysql->stmts= NULL;
   }
@@ -2000,6 +2020,7 @@ static void mysql_close_options(MYSQL *mysql)
     free(mysql->options.extension->tls_version);
     free(mysql->options.extension->url);
     free(mysql->options.extension->connection_handler);
+    free(mysql->options.extension->proxy_header);
     if(ma_hashtbl_inited(&mysql->options.extension->connect_attrs))
       ma_hashtbl_free(&mysql->options.extension->connect_attrs);
     if (ma_hashtbl_inited(&mysql->options.extension->userdata))
@@ -2035,18 +2056,20 @@ void my_set_error(MYSQL *mysql,
 
   const char *errmsg;
 
-  if (!format)
-  {
-    if (error_nr >= CR_MIN_ERROR && error_nr <= CR_MYSQL_LAST_ERROR)
-      errmsg= ER(error_nr);
-    else if (error_nr >= CER_MIN_ERROR && error_nr <= CR_MARIADB_LAST_ERROR)
-      errmsg= CER(error_nr);
-    else
-      errmsg= ER(CR_UNKNOWN_ERROR);
-  }
-
   mysql->net.last_errno= error_nr;
   ma_strmake(mysql->net.sqlstate, sqlstate, SQLSTATE_LENGTH);
+
+  if (!format)
+  {
+    if (IS_MYSQL_ERROR(error_nr) || IS_MARIADB_ERROR(error_nr))
+      errmsg= ER(error_nr);
+    else {
+      snprintf(mysql->net.last_error, MYSQL_ERRMSG_SIZE - 1,
+               ER_UNKNOWN_ERROR_CODE, error_nr);
+      return;
+    }
+  }
+
   va_start(ap, format);
   vsnprintf(mysql->net.last_error, MYSQL_ERRMSG_SIZE - 1,
             format ? format : errmsg, ap);
@@ -2466,12 +2489,16 @@ mysql_use_result(MYSQL *mysql)
   }
   if (!(result=(MYSQL_RES*) calloc(1, sizeof(*result)+
 				      sizeof(ulong)*mysql->field_count)))
+  {
+    SET_CLIENT_ERROR(mysql, CR_OUT_OF_MEMORY, SQLSTATE_UNKNOWN, 0);
     return(0);
+  }
   result->lengths=(ulong*) (result+1);
   if (!(result->row=(MYSQL_ROW)
 	malloc(sizeof(result->row[0])*(mysql->field_count+1))))
   {					/* Ptrs: to one row */
     free(result);
+    SET_CLIENT_ERROR(mysql, CR_OUT_OF_MEMORY, SQLSTATE_UNKNOWN, 0);
     return(0);
   }
   result->fields=	mysql->fields;
@@ -2850,7 +2877,7 @@ mysql_get_proto_info(MYSQL *mysql)
 const char * STDCALL
 mysql_get_client_info(void)
 {
-  return (char*) MARIADB_CLIENT_VERSION_STR;
+  return (char*) MARIADB_PACKAGE_VERSION;
 }
 
 static size_t get_store_length(size_t length)
@@ -3255,8 +3282,7 @@ mysql_optionsv(MYSQL *mysql,enum mysql_option option, ...)
   case MARIADB_OPT_PROXY_HEADER:
     {
     size_t arg2 = va_arg(ap, size_t);
-    OPT_SET_EXTENDED_VALUE(&mysql->options, proxy_header, (char *)arg1);
-    OPT_SET_EXTENDED_VALUE(&mysql->options, proxy_header_len, arg2);
+    OPT_SET_EXTENDED_VALUE_BIN(&mysql->options, proxy_header, proxy_header_len, (char *)arg1, arg2);
     }
     break;
   case MARIADB_OPT_TLS_VERSION:
@@ -3866,7 +3892,7 @@ int STDCALL mysql_set_server_option(MYSQL *mysql,
 
 ulong STDCALL mysql_get_client_version(void)
 {
-  return MARIADB_VERSION_ID;
+  return MARIADB_PACKAGE_VERSION_ID;
 }
 
 ulong STDCALL mysql_hex_string(char *to, const char *from, unsigned long len)
@@ -4225,12 +4251,21 @@ int STDCALL mysql_reset_connection(MYSQL *mysql)
 
   /* skip result sets */
   if (mysql->status == MYSQL_STATUS_USE_RESULT ||
-      mysql->status == MYSQL_STATUS_GET_RESULT ||
-      mysql->status & SERVER_MORE_RESULTS_EXIST)
+      mysql->status == MYSQL_STATUS_GET_RESULT)
   {
     mthd_my_skip_result(mysql);
-    mysql->status= MYSQL_STATUS_READY;
   }
+
+  if (mysql->server_status & SERVER_MORE_RESULTS_EXIST)
+  {
+    while (mysql_next_result(mysql))
+    {
+      MYSQL_RES *res= mysql_use_result(mysql);
+      mysql_free_result(res);
+    }
+  }
+
+  mysql->status= MYSQL_STATUS_READY;
 
   rc= ma_simple_command(mysql, COM_RESET_CONNECTION, 0, 0, 0, 0);
   if (rc && mysql->options.reconnect)

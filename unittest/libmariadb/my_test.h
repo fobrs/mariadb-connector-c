@@ -32,6 +32,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include <stdlib.h>
 #include <ma_server_error.h>
 #include <mysql/client_plugin.h>
+#include <errmsg.h>
 
 #ifndef WIN32
 #include <pthread.h>
@@ -72,6 +73,13 @@ if (IS_SKYSQL(hostname)) \
 #else
 #define SKIP_NOTLS
 #endif
+
+#define SKIP_TLS \
+if (force_tls)\
+{\
+  diag("Test doesn't work with TLS");\
+  return SKIP;\
+}
 
 MYSQL *mysql_default = NULL;  /* default connection */
 
@@ -654,6 +662,33 @@ void run_tests(struct my_tests_st *test) {
   while (test[total].function)
     total++;
   plan(total);
+
+  /* display TLS stats */
+  mysql= mysql_init(NULL);
+  mysql_ssl_set(mysql, NULL, NULL, NULL, NULL, NULL);
+
+  if (!mysql_real_connect(mysql, hostname, username, password, schema, port, socketname, 0))
+  {
+    BAIL_OUT("Can't establish TLS connection to server.");
+  }
+
+  if (!mysql_query(mysql, "SHOW VARIABLES LIKE '%ssl%'"))
+  {
+    MYSQL_RES *res;
+    MYSQL_ROW row;
+
+    diag("TLS server variables");
+    diag("--------------------");
+
+    res= mysql_store_result(mysql);
+    while ((row= mysql_fetch_row(res)))
+      diag("%s: %s", row[0], row[1]);
+    mysql_free_result(res);
+    diag("Cipher in use: %s", mysql_get_ssl_cipher(mysql));
+    diag("--------------------");
+  }
+  mysql_close(mysql);
+
 
   if ((mysql_default= test_connect(NULL)))
   {

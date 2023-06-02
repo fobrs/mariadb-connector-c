@@ -108,7 +108,7 @@ const char *client_errors[]=
 /* 2023 */  "",
 /* 2024 */  "",
 /* 2025 */  "",
-/* 2026 */  "SSL connection error: %-.100s",
+/* 2026 */  "TLS/SSL error: %-.100s",
 /* 2027 */  "received malformed packet",
 /* 2028 */  "",
 /* 2029 */  "",
@@ -140,10 +140,10 @@ const char *client_errors[]=
 /* 2055 */  "Lost connection to MySQL server at '%s', system error: %d",
 /* 2056 */  "Server closed statement due to a prior %s function call",
 /* 2057 */  "The number of parameters in bound buffers differs from number of columns in resultset",
-/* 2059 */  "Can't connect twice. Already connected",
-/* 2058 */  "Plugin %s could not be loaded: %s",
-/* 2059 */  "An attribute with same name already exists",
-/* 2060 */  "Plugin doesn't support this function",
+/* 2058 */  "Can't connect twice. Already connected",
+/* 2059 */  "Plugin %s could not be loaded: %s",
+/* 2060 */  "An attribute with same name already exists",
+/* 2061 */  "Plugin doesn't support this function",
             ""
 };
 #endif
@@ -159,6 +159,13 @@ const char *mariadb_client_errors[] =
   /* 5006 */ "Bulk operation without parameters is not supported",
   /* 5007 */ "Invalid statement handle",
   /* 5008 */ "Unsupported version %d. Supported versions are in the range %d - %d",
+  /* 5009 */ "",
+  /* 5010 */ "",
+  /* 5011 */ "",
+  /* 5012 */ "",
+  /* 5013 */ "Read error: %s (%d)",
+  /* 5014 */ "Write error: %s (%d)",
+  /* 5015 */ "Error while uncompressing packet",
   ""
 };
 
