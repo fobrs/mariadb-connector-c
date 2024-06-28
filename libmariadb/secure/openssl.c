@@ -537,29 +537,25 @@ my_bool ma_tls_connect(MARIADB_TLS *ctls)
   if ((cert= SSL_get_peer_certificate(ssl)))
   {
     char fp[33];
-#if OPENSSL_VERSION_NUMBER >= 0x10100000L
+#if OPENSSL_VERSION_NUMBER >= 0x10101000L
     const ASN1_TIME *not_before= X509_get0_notBefore(cert),
                     *not_after= X509_get0_notAfter(cert);
     ASN1_TIME_to_tm(not_before, (struct tm *)&ctls->cert_info.not_before);
     ASN1_TIME_to_tm(not_after, (struct tm *)&ctls->cert_info.not_after);
 #else
-#ifdef WIN32
-#define time64_t __time64_t
-#define gmtime64 _gmtime64
-#endif
-    ASN1_TIME *not_before= X509_getm_notBefore(cert),
-              *not_after= X509_getm_notAfter(cert);
-    time64_t  now, from, to;
+    const ASN1_TIME *not_before= X509_get_notBefore(cert),
+                    *not_after= X509_get_notAfter(cert);
+    time_t  now, from, to;
     int pday, psec;
     /* ANS1_TIME_diff returns days and seconds between now and the
        specified ASN1_TIME */
-    _time64(&now);
-    ASN1_TIME_diff(&pday, &psec, (const ASN1_TIME *)not_before, NULL);
+    time(&now);
+    ASN1_TIME_diff(&pday, &psec, not_before, NULL);
     from= now - (pday * 86400 + psec);
-    memcpy(&ctls->cert_info.not_before, gmtime64(&from), sizeof(struct tm));
-    ASN1_TIME_diff(&pday, &psec, NULL, (const ASN1_TIME *)not_after);
+    gmtime_r(&from, &ctls->cert_info.not_before);
+    ASN1_TIME_diff(&pday, &psec, NULL, not_after);
     to= now + (pday * 86400 + psec);
-    memcpy(&ctls->cert_info.not_after, gmtime64(&to), sizeof(struct tm));
+    gmtime_r(&to, &ctls->cert_info.not_after);
 #endif
     ctls->cert_info.subject= X509_NAME_oneline(X509_get_subject_name(cert), NULL, 0);
     ctls->cert_info.issuer= X509_NAME_oneline(X509_get_issuer_name(cert), NULL, 0);
@@ -567,6 +563,8 @@ my_bool ma_tls_connect(MARIADB_TLS *ctls)
 
     ma_tls_get_finger_print(ctls, MA_HASH_SHA256, fp, 33);
     mysql_hex_string(ctls->cert_info.fingerprint, fp, 32);
+
+    X509_free(cert);
   }
 
   return 0;

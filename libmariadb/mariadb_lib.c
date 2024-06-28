@@ -1444,6 +1444,14 @@ mysql_real_connect(MYSQL *mysql, const char *host, const char *user,
   char *connection_handler= (mysql->options.extension) ?
                             mysql->options.extension->connection_handler : 0;
 
+  if ((client_flag & CLIENT_ALLOWED_FLAGS) != client_flag)
+  {
+    my_set_error(mysql, CR_INVALID_CLIENT_FLAG, SQLSTATE_UNKNOWN,
+                 ER(CR_INVALID_CLIENT_FLAG),
+                 client_flag, CLIENT_ALLOWED_FLAGS);
+    return NULL;
+  }
+
   if (!mysql->methods)
     mysql->methods= &MARIADB_DEFAULT_METHODS;
 
@@ -3305,10 +3313,17 @@ mysql_refresh(MYSQL *mysql,uint options)
 int STDCALL
 mysql_kill(MYSQL *mysql,ulong pid)
 {
-  char buff[12];
-  int4store(buff,pid);
-  /* if we kill our own thread, reading the response packet will fail */
-  return(ma_simple_command(mysql, COM_PROCESS_KILL,buff,4,0,0));
+  char buff[16];
+
+  /* process id can't be larger than 4-bytes */
+  if (pid & (~0xFFFFFFFFUL))
+  {
+    my_set_error(mysql, CR_CONNECTION_ERROR, SQLSTATE_UNKNOWN, 0);
+    return 1;
+  }
+
+  snprintf(buff, sizeof buff, "KILL %lu", pid);
+  return mysql_real_query(mysql, (char *)buff, (ulong)strlen(buff));
 }
 
 
