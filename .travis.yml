@@ -7,6 +7,17 @@ cache:
   directories:
     - $HOME/docker
 
+before_install:
+  - |-
+    if [ -z "$server_branch" ] ; then
+      case $TRAVIS_OS_NAME in
+        windows)
+          choco install python --version=3.12.0
+          python --version
+          ;;
+      esac
+    fi
+
 env:
   global: local=0 DB=testc CLEAR_TEXT=0
 

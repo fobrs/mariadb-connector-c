@@ -117,6 +117,7 @@ struct st_mariadb_extension {
   unsigned long mariadb_client_flag; /* MariaDB specific client flags */
   unsigned long mariadb_server_capabilities; /* MariaDB specific server capabilities */
   my_bool auto_local_infile;
+  my_bool tls_validation;
 };
 
 #define OPT_EXT_VAL(a,key) \
@@ -131,15 +132,9 @@ typedef struct st_mariadb_field_extension
   MARIADB_CONST_STRING metadata[MARIADB_FIELD_ATTR_LAST+1]; /* 10.5 */
 } MA_FIELD_EXTENSION;
 
-#if defined(HAVE_SCHANNEL) || defined(HAVE_GNUTLS)
-#define reset_tls_self_signed_error(mysql)              \
-  do {                                                  \
-    free((char*)mysql->net.tls_self_signed_error);      \
-    mysql->net.tls_self_signed_error= 0;                \
-  } while(0)
-#else
-#define reset_tls_self_signed_error(mysql)              \
-  do {                                                  \
-    mysql->net.tls_self_signed_error= 0;                \
+#ifdef HAVE_TLS
+#define reset_tls_error(mysql) \
+  do {                         \
+    mysql->net.tls_verify_status= 0; \
   } while(0)
 #endif
